@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import './App.css'
 
 export type ChatMessage = {
@@ -9,13 +9,6 @@ export type ChatMessage = {
 }
 
 type ConnectionStatus = 'Connected' | 'Disconnected' | 'Connecting'
-
-const mockMessages: ChatMessage[] = [
-  { id: 1, username: 'Maya', text: 'Hey everyone! Welcome to the chat 👋', timestamp: '10:32 AM' },
-  { id: 2, username: 'Jordan', text: 'Thanks! Excited to try this out.', timestamp: '10:33 AM' },
-  { id: 3, username: 'You', text: 'This is looking good so far.', timestamp: '10:34 AM' },
-  { id: 4, username: 'Sam', text: 'Nice and simple. Just what we need.', timestamp: '10:35 AM' },
-]
 
 function ChatHeader({
   username,
@@ -48,8 +41,8 @@ function ChatHeader({
   )
 }
 
-function MessageItem({ message }: { message: ChatMessage }) {
-  const isOwnMessage = message.username === 'You'
+function MessageItem({ message, currentUsername }: { message: ChatMessage; currentUsername: string }) {
+  const isOwnMessage = message.username === currentUsername
   return (
     <article className={`message ${isOwnMessage ? 'message-own' : ''}`}>
       <div className="avatar" aria-hidden="true">{message.username.charAt(0).toUpperCase()}</div>
@@ -64,24 +57,25 @@ function MessageItem({ message }: { message: ChatMessage }) {
   )
 }
 
-function MessageList({ messages }: { messages: ChatMessage[] }) {
+function MessageList({ messages, currentUsername }: { messages: ChatMessage[]; currentUsername: string }) {
   return (
     <section className="messages" aria-label="Chat messages" aria-live="polite">
-      <div className="date-divider"><span>Today</span></div>
-      {messages.map((message) => <MessageItem key={message.id} message={message} />)}
+      {messages.length > 0
+        ? <div className="date-divider"><span>Today</span></div>
+        : <p className="empty-state">No messages yet</p>}
+      {messages.map((message) => <MessageItem key={message.id} message={message} currentUsername={currentUsername} />)}
     </section>
   )
 }
 
-function MessageInput({ onSend }: { onSend: (text: string) => void }) {
+function MessageInput({ onSend, connected }: { onSend: (text: string) => boolean; connected: boolean }) {
   const [text, setText] = useState('')
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const trimmedText = text.trim()
     if (!trimmedText) return
-    onSend(trimmedText)
-    setText('')
+    if (onSend(trimmedText)) setText('')
   }
 
   return (
@@ -94,34 +88,60 @@ function MessageInput({ onSend }: { onSend: (text: string) => void }) {
         placeholder="Write a message..."
         maxLength={500}
       />
-      <button type="submit" disabled={!text.trim()}>Send <span aria-hidden="true">↑</span></button>
+      <button type="submit" disabled={!text.trim() || !connected}>Send <span aria-hidden="true">↑</span></button>
     </form>
   )
 }
 
 function App() {
-  const [username, setUsername] = useState('Alex')
-  const [messages, setMessages] = useState(mockMessages)
-  const status: ConnectionStatus = 'Disconnected'
+  const [username, setUsername] = useState('')
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [status, setStatus] = useState<ConnectionStatus>('Connecting')
+  const socketRef = useRef<WebSocket | null>(null)
+
+  useEffect(() => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const socket = new WebSocket(`${protocol}//${window.location.hostname}:5300`)
+    socketRef.current = socket
+
+    socket.addEventListener('open', () => setStatus('Connected'))
+    socket.addEventListener('close', () => setStatus('Disconnected'))
+    socket.addEventListener('error', () => setStatus('Disconnected'))
+    socket.addEventListener('message', (event) => {
+      try {
+        const incoming = JSON.parse(String(event.data)) as Omit<ChatMessage, 'id'>
+        if (typeof incoming.text !== 'string' || typeof incoming.username !== 'string') return
+        setMessages((currentMessages) => [...currentMessages, { ...incoming, id: Date.now() + currentMessages.length }])
+      } catch {
+        // Ignore messages that do not match the chat message format.
+      }
+    })
+
+    return () => {
+      socketRef.current = null
+      socket.close()
+    }
+  }, [])
 
   function addMessage(text: string) {
+    const socket = socketRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false
     const now = new Date()
-    setMessages((currentMessages) => [...currentMessages, {
-      id: Date.now(),
+    socket.send(JSON.stringify({
       username: username.trim() || 'You',
       text,
       timestamp: now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
-    }])
+    }))
+    return true
   }
 
   return (
     <main className="page-shell">
       <div className="chat-card">
         <ChatHeader username={username} onUsernameChange={setUsername} status={status} />
-        <MessageList messages={messages} />
+        <MessageList messages={messages} currentUsername={username.trim() || 'You'} />
         <footer className="chat-footer">
-          <MessageInput onSend={addMessage} />
-          <p className="helper-text">Messages are just a local preview for now.</p>
+          <MessageInput onSend={addMessage} connected={status === 'Connected'} />
         </footer>
       </div>
     </main>
